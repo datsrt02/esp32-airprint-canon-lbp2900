@@ -2,7 +2,7 @@ menu "Printer server"
 
     config PRINTER_DRIVER
         string "Printer driver"
-        default "canon-mg2500"
+        default "canon-lbp2900"
         help
             The id of the printer model the firmware drives until a printer
             is plugged in, and for a printer it does not recognise, from

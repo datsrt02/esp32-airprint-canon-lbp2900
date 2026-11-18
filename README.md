@@ -21,6 +21,7 @@ Turns any USB-only printers into a wireless printer and scanner. An ESP32-S3 boa
 
 | Series | Models | Scan |
 |---|---|---|
+| 🟠 LBP2900 | LBP2900 / LBP2900B (`04a9:2676`) | no scanner |
 | 🟢 MG2500 | MG2550S | yes |
 | 🟡 MG2400 | MG2410 to MG2490 | yes |
 | 🟡 MG2500 | MG2510 to MG2590 (other than the MG2500S) | yes |
@@ -41,6 +42,8 @@ Turns any USB-only printers into a wireless printer and scanner. An ESP32-S3 boa
 
 - 🟢 Validated on real printer
 - 🟡 Expected to work, not tested on real hardware yet.
+- 🟠 Experimental CAPT implementation: builds and passes the core host self-tests, but still
+  needs validation on a real LBP2900 before it can be called supported.
 
 The firmware recognises the printer when it is plugged in. Other printers? Please open an issue or a PR.
 
@@ -62,8 +65,8 @@ Optionally: a SSD1315 OLED screen and a 3D-printed case, see later in this tutor
    ```
    WIFI_SSID=your-network
    WIFI_PASSWORD=your-password
-   PRINTER_NAME=Canon MG2500 (ESP32)
-   HOSTNAME=canon-mg2500
+   PRINTER_NAME=Canon LBP2900 (ESP32)
+   HOSTNAME=canon-lbp2900
    MODE=debug
    ```
    `MODE=debug` lets you update the board over WiFi later (see below); `MODE=normal` does without. `.env` is git-ignored, so your WiFi password stays local.
@@ -76,10 +79,15 @@ Plug the printer to the port labelled "USB"
 
 NOTE: You may also need to bridge the "USB-OTG" solder join on the board, so that it supplies 5V to the printer. While the printer doesn't actively use 5V, it sense the USB plug using this signal.
 
-- **The web app:** open `http://canon-mg2500.local/` (your `HOSTNAME`) on your phone or computer.
+- **The web app:** open `http://canon-lbp2900.local/` (your `HOSTNAME`) on your phone or computer.
 - **The button on the board** (BOOT, or one on GPIO4): press to scan, press twice for a test page, hold 2 s to cancel.
 - **Print from a phone or a Mac:** on an iPhone, Share → Print and pick the printer. On a Mac, add it in System Settings → Printers & Scanners.
 - **Scan on a Mac:** open Image Capture (or Preview → File → Import from Scanner) and pick the printer.
+
+For the LBP2900, printing is monochrome at 600 dpi on A4 or Letter. Scanning
+and the button test page are unavailable. CAPT is bidirectional: use the
+printer's normal USB printer-class interface and do not put a USB/IP or CUPS
+backend between the ESP32 and the printer.
 
 ## Adding OLED screen and buttons
 
@@ -112,13 +120,26 @@ Set `MODE=dev` and flash: print jobs are processed but not printed, and scans sh
 On the computer, without the board: `make -C host && cd host && ./airprint_host`, then open http://localhost:8631/ (an emulated printer and scanner). To work on the web app with live reloading: `cd web && npm run dev` (it talks to that server; `DEVICE=http://<board IP> npm run dev` talks to the board).
 
 Technical details are in [AGENTS.md](AGENTS.md).
+The LBP2900 port and its hardware-validation checklist are documented in
+[docs/lbp2900.md](docs/lbp2900.md).
 
 ## Adding a printer
 
 Each printer model is a driver in `components/printers/`, listed in `printers.c`; the firmware picks the one of the printer that is plugged in. A Canon PIXMA whose stream is close to the MG2500's is one line in `canon_pixma.c`; another printer is a new file in the same folder. See [AGENTS.md](AGENTS.md) for details.
 
+The LBP2900 driver is in `canon_lbp2900.c`. It implements the CAPT command
+sequence and streams 70-line Hi-SCoA bands, so a page does not need to fit in
+RAM. The protocol implementation follows the public reverse-engineering notes
+from [captdriver](https://github.com/agalakhov/captdriver); Canon's proprietary
+driver or binary blobs are not included.
+
 ## License
 
-MIT, see [LICENSE](LICENSE).
+The original project and all non-CAPT modules remain MIT, see
+[LICENSE](LICENSE). `components/printers/canon_lbp2900.c` is
+GPL-3.0-or-later because its Hi-SCoA implementation is based on GPLv3
+`captdriver`; a firmware image linked with that module is therefore
+distributed under [GPL-3.0-or-later](LICENSES/GPL-3.0-or-later.txt). Canon
+binary blobs are not included.
 
 The printer and scanner protocols follow [Gutenprint](https://gimp-print.sourceforge.io/) and [SANE](http://www.sane-project.org/)'s pixma backend. The JPEG encoder's DCT is a translation of libjpeg's `jfdctint.c`: this software is based in part on the work of the Independent JPEG Group. The web UI bundles [Svelte](https://svelte.dev/) (MIT) and [pdf.js](https://mozilla.github.io/pdf.js/) (Apache-2.0).

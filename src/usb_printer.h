@@ -48,6 +48,11 @@ esp_err_t usb_printer_flush(void);
 // ESP_OK = found, ESP_ERR_TIMEOUT = not seen in time, ESP_ERR_NOT_SUPPORTED =
 // the printer has no bulk IN endpoint.
 esp_err_t usb_printer_wait_response(const char *needle, uint32_t timeout_ms);
+// One binary request/reply exchange on the printer bulk endpoints. This is
+// used by CAPT printers, whose replies are binary and must be consumed before
+// the next command. `reply_len` is the capacity on entry and count on success.
+esp_err_t usb_printer_transact(const uint8_t *request, size_t request_len,
+                               uint8_t *reply, size_t *reply_len, uint32_t timeout_ms);
 void usb_printer_job_end(void);
 
 // Abort a running job from any task: stops pending transfers and makes the

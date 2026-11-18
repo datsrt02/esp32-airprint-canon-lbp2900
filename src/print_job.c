@@ -105,6 +105,12 @@ static int test_sync(void *ctx, const char *what)
     return print_job_sync(what);
 }
 
+static int test_transact(void *ctx, const uint8_t *request, size_t request_len,
+                         uint8_t *reply, size_t *reply_len, uint32_t timeout_ms)
+{
+    return usb_printer_transact(request, request_len, reply, reply_len, timeout_ms) == ESP_OK ? 0 : -1;
+}
+
 static void test_progress(void *ctx, int line, int lines)
 {
     vTaskDelay(1);      // let the idle task run (task watchdog)
@@ -156,7 +162,11 @@ esp_err_t print_job_test_page(bool dry_run, int dpi, print_stats_t *stats)
     ESP_LOGI(TAG, "%s: %s test page at %d dpi, free heap %lu", dry_run ? "dry run" : "printing", d->id, dpi,
              (unsigned long)esp_get_free_heap_size());
     test_out_t out = {.dry_run = dry_run};
-    printer_io_t io = {.write = test_write, .sync = dry_run ? NULL : test_sync, .progress = test_progress, .ctx = &out};
+    printer_io_t io = {.write = test_write,
+                       .sync = dry_run ? NULL : test_sync,
+                       .transact = dry_run ? NULL : test_transact,
+                       .progress = test_progress,
+                       .ctx = &out};
     err = d->test_page(d, &io, dpi, label) == 0 ? ESP_OK : ESP_FAIL;
     if (!dry_run) {
         if (err != ESP_OK && usb_printer_connected())

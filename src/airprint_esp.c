@@ -117,6 +117,12 @@ static int job_sync(void *ctx, const char *what)
     return print_job_sync(what);
 }
 
+static int job_transact(void *ctx, const uint8_t *request, size_t request_len,
+                        uint8_t *reply, size_t *reply_len, uint32_t timeout_ms)
+{
+    return usb_printer_transact(request, request_len, reply, reply_len, timeout_ms) == ESP_OK ? 0 : -1;
+}
+
 static void job_close(void *ctx, bool ok)
 {
     usb_printer_job_end();      // sends the job's last bytes: a cancel may still need the timer
@@ -460,6 +466,7 @@ esp_err_t airprint_esp_start(const char *hostname, void (*on_job_state)(bool pri
         .job_open = job_open,
         .job_write = job_write,
         .job_sync = job_sync,
+        .job_transact = job_transact,
         .job_close = job_close,
         .job_cancel = job_cancel,
         .job_state = job_state,

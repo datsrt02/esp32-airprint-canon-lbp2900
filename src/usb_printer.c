@@ -69,6 +69,14 @@ typedef struct {
     SemaphoreHandle_t ctrl_sem;
     SemaphoreHandle_t ctrl_mutex;
 
+    // A CAPT request owns the normal bulk-IN transfer until one complete
+    // binary reply has been assembled. Normal PIXMA XML polling is paused.
+    volatile bool raw_mode;
+    SemaphoreHandle_t raw_sem;
+    uint8_t raw[MSG_BUF_SIZE];
+    size_t raw_len;
+    bool raw_overflow;
+
     // scanner interface
     uint8_t scan_intf, scan_ep_out, scan_ep_in;
     uint16_t scan_mps;                  // bulk IN max packet size: reads are multiples of it
@@ -182,6 +190,24 @@ static void in_cb(usb_transfer_t *xfer)
 {
     s_p.in_inflight = false;
     s_p.in_last = xTaskGetTickCount();
+    if (s_p.raw_mode) {
+        if (xfer->status == USB_TRANSFER_STATUS_COMPLETED && xfer->actual_num_bytes > 0) {
+            xSemaphoreTake(s_p.lock, portMAX_DELAY);
+            size_t n = xfer->actual_num_bytes;
+            if (s_p.raw_len + n <= sizeof(s_p.raw)) {
+                memcpy(s_p.raw + s_p.raw_len, xfer->data_buffer, n);
+                s_p.raw_len += n;
+            } else {
+                s_p.raw_overflow = true;
+            }
+            xSemaphoreGive(s_p.lock);
+        } else if (xfer->status != USB_TRANSFER_STATUS_COMPLETED &&
+                   xfer->status != USB_TRANSFER_STATUS_CANCELED) {
+            s_p.raw_overflow = true; // reported as a failed transaction
+        }
+        xSemaphoreGive(s_p.raw_sem);
+        return;
+    }
     if (xfer->status == USB_TRANSFER_STATUS_COMPLETED && xfer->actual_num_bytes > 0) {
         size_t n = xfer->actual_num_bytes;
         if (s_p.msg_len + n >= MSG_BUF_SIZE) {
@@ -634,7 +660,9 @@ esp_err_t usb_printer_start(usb_printer_conn_cb_t cb)
     s_p.out_free = xQueueCreate(OUT_XFER_COUNT, sizeof(usb_transfer_t *));
     s_p.scan_out_sem = xSemaphoreCreateBinary();
     s_p.scan_in_sem = xSemaphoreCreateBinary();
-    if (!s_p.lock || !s_p.ctrl_mutex || !s_p.ctrl_sem || !s_p.out_free || !s_p.scan_out_sem || !s_p.scan_in_sem)
+    s_p.raw_sem = xSemaphoreCreateBinary();
+    if (!s_p.lock || !s_p.ctrl_mutex || !s_p.ctrl_sem || !s_p.out_free || !s_p.scan_out_sem || !s_p.scan_in_sem ||
+        !s_p.raw_sem)
         return ESP_ERR_NO_MEM;
 
     const usb_host_config_t host_cfg = {.skip_phy_setup = false, .intr_flags = ESP_INTR_FLAG_LEVEL1};
@@ -825,8 +853,80 @@ esp_err_t usb_printer_wait_response(const char *needle, uint32_t timeout_ms)
     return ESP_ERR_TIMEOUT;
 }
 
+static size_t capt_reply_size(const uint8_t *p, size_t have)
+{
+    size_t binary = (size_t)p[2] | (size_t)p[3] << 8;
+    // A few CAPT firmwares encode the decimal length as BCD. Both forms can
+    // look plausible (for example 0x0088 means binary 136 or BCD 88), so a
+    // short USB packet whose length exactly matches BCD settles the ambiguity.
+    size_t bcd = (p[2] & 15) + 10u * (p[2] >> 4) + 100u * (p[3] & 15) + 1000u * (p[3] >> 4);
+    if (bcd >= 6 && bcd <= sizeof(s_p.raw) && have == bcd)
+        return bcd;
+    return binary;
+}
+
+esp_err_t usb_printer_transact(const uint8_t *request, size_t request_len,
+                               uint8_t *reply, size_t *reply_len, uint32_t timeout_ms)
+{
+    if (!request || request_len < 4 || !reply || !reply_len || !s_p.ep_in)
+        return ESP_ERR_INVALID_ARG;
+    if (!s_p.job_active)
+        return ESP_ERR_INVALID_STATE;
+
+    xSemaphoreTake(s_p.lock, portMAX_DELAY);
+    s_p.raw_len = 0;
+    s_p.raw_overflow = false;
+    s_p.raw_mode = true;
+    xSemaphoreGive(s_p.lock);
+    xSemaphoreTake(s_p.raw_sem, 0);
+
+    esp_err_t err = usb_printer_write(request, request_len);
+    if (err == ESP_OK)
+        err = usb_printer_flush();
+    if (err != ESP_OK)
+        goto done;
+
+    TickType_t start = xTaskGetTickCount();
+    size_t expected = 6;
+    while (xTaskGetTickCount() - start < pdMS_TO_TICKS(timeout_ms)) {
+        in_submit();
+        xSemaphoreTake(s_p.raw_sem, pdMS_TO_TICKS(50));
+        err = job_check();
+        if (err != ESP_OK)
+            goto done;
+        xSemaphoreTake(s_p.lock, portMAX_DELAY);
+        size_t have = s_p.raw_len;
+        bool overflow = s_p.raw_overflow;
+        if (have >= 6)
+            expected = capt_reply_size(s_p.raw, have);
+        xSemaphoreGive(s_p.lock);
+        if (overflow || expected < 6 || expected > sizeof(s_p.raw)) {
+            err = ESP_ERR_INVALID_SIZE;
+            goto done;
+        }
+        if (have >= expected) {
+            if (*reply_len < expected) {
+                err = ESP_ERR_INVALID_SIZE;
+                goto done;
+            }
+            xSemaphoreTake(s_p.lock, portMAX_DELAY);
+            memcpy(reply, s_p.raw, expected);
+            xSemaphoreGive(s_p.lock);
+            *reply_len = expected;
+            err = ESP_OK;
+            goto done;
+        }
+    }
+    err = ESP_ERR_TIMEOUT;
+
+done:
+    s_p.raw_mode = false;
+    return err;
+}
+
 void usb_printer_job_end(void)
 {
+    s_p.raw_mode = false;
     // the job's last bytes (end of page, end of job) are still in the
     // transfer being filled unless the driver synced at the end: send them.
     // Not after a cancel or a failed transfer (job_check stops the flush).

@@ -28,6 +28,11 @@ typedef struct {
     // Canon's "StartJob"); < 0 = the printer is gone. Drivers carry on
     // without a reply.
     int (*sync)(void *ctx, const char *what);
+    // Optional binary request/reply transaction for bidirectional printer
+    // languages such as Canon CAPT. `reply_len` is the capacity on entry and
+    // the byte count on success. The request is flushed before the wait.
+    int (*transact)(void *ctx, const uint8_t *request, size_t request_len,
+                    uint8_t *reply, size_t *reply_len, uint32_t timeout_ms);
     // optional: called every 64 lines of a test page (yield, log progress)
     void (*progress)(void *ctx, int line, int lines);
     void *ctx;

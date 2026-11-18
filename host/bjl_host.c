@@ -283,7 +283,9 @@ static int cmd_selftest(void)
     CHECK(printer_driver_find("canon-mg2500"), "canon-mg2500 driver");
     for (int k = 0; printer_drivers[k]; k++) {
         const printer_driver_t *d = printer_drivers[k];
-        CHECK(d->test_page && d->model, "%s: test page", d->id);
+        // BJL-family drivers share the Canon inkjet test-page renderer.
+        // Other printer languages may deliberately have no button page.
+        CHECK(!d->model || d->test_page, "%s: test page", d->id);
         for (int i = 0; d->test_page && d->model && i < d->nresolutions; i++) {
             int dpi = d->resolutions[i];
             uint32_t want = 0, got = 0;
@@ -310,6 +312,30 @@ static int cmd_selftest(void)
         }
     }
 
+    // LBP2900: exercise the complete offline command stream and Hi-SCoA
+    // compressor without requiring a bidirectional USB printer.
+    {
+        const printer_driver_t *d = printer_driver_find("canon-lbp2900");
+        CHECK(d, "canon-lbp2900 driver");
+        uint32_t crc = 0;
+        printer_io_t io = {.write = crc_write, .ctx = &crc};
+        void *j = d ? d->job_begin(d, &io, 600, 0) : NULL;
+        CHECK(j, "canon-lbp2900 job begin");
+        if (j) {
+            CHECK(d->page_begin(j, 4960, 140, 1) == 0, "canon-lbp2900 page begin");
+            uint8_t line[4960];
+            for (int y = 0; y < 140; y++) {
+                memset(line, 255, sizeof(line));
+                if (y >= 32 && y < 108)
+                    memset(line + 300, (y & 1) ? 0 : 127, 1200);
+                CHECK(d->page_line(j, y, line) == 0, "canon-lbp2900 line %d", y);
+            }
+            CHECK(d->page_end(j) == 0, "canon-lbp2900 page end");
+            CHECK(d->job_end(j) == 0, "canon-lbp2900 job end");
+            CHECK(crc != 0, "canon-lbp2900 non-empty stream");
+        }
+    }
+
     // the firmware's choice of driver for the attached printer
     {
         static const struct {
@@ -323,6 +349,8 @@ static int cmd_selftest(void)
             {0x04a9, 0x1234, "MANUFACTURER:Canon;MODEL:iP2800 series;", "canon-ip2800"},
             {0x04a9, 0x1234, "MFG:Canon;MDL:P200;", "canon-p200"},            // " series" optional
             {0x04a9, 0x1234, "MFG:Canon; MDL:mg2900 Series;", "canon-mg2900"},
+            {0x04a9, 0x2676, "", "canon-lbp2900"},                           // CAPT by USB id
+            {0x04a9, 0x1234, "MFG:Canon;MDL:LBP2900;CMD:CAPT;", "canon-lbp2900"},
             {0x04a9, 0x1234, "MFG:Canon;MDL:MG3600 series;", NULL},           // not supported
             {0x03f0, 0x1234, "MFG:HP;MDL:iP2700 series;", NULL},              // another maker
             {0x04a9, 0x1234, "MFG:Canon;MDL:iP2700 series XL;", NULL},

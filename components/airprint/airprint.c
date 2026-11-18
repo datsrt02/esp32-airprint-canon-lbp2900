@@ -917,6 +917,14 @@ static int pipe_sync(void *ctx, const char *what)
     return s_cfg->job_sync ? s_cfg->job_sync(s_cfg->ctx, what) : 0;
 }
 
+static int pipe_transact(void *ctx, const uint8_t *request, size_t request_len,
+                         uint8_t *reply, size_t *reply_len, uint32_t timeout_ms)
+{
+    return s_cfg->job_transact
+               ? s_cfg->job_transact(s_cfg->ctx, request, request_len, reply, reply_len, timeout_ms)
+               : -1;
+}
+
 static int pipe_page_begin(void *user, const raster_page_t *pg)
 {
     pipe_t *p = user;
@@ -930,7 +938,10 @@ static int pipe_page_begin(void *user, const raster_page_t *pg)
     }
     if (!p->drv_job) {
         int paper = printer_driver_paper_for(d, pg->height, pg->dpi);
-        p->io = (printer_io_t){.write = pipe_write, .sync = pipe_sync, .ctx = p};
+        p->io = (printer_io_t){.write = pipe_write,
+                               .sync = pipe_sync,
+                               .transact = s_cfg->job_transact ? pipe_transact : NULL,
+                               .ctx = p};
         p->dpi = pg->dpi;
         LOGI("job %d: %s %d dpi, %s", p->job->id, d->papers[paper].name, pg->dpi, pg->bytes_pp == 3 ? "color" : "gray");
         p->drv_job = d->job_begin(d, &p->io, pg->dpi, paper);
